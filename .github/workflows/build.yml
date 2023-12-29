@@ -3,7 +3,7 @@ name: 编译mipsel版cloudflared
 on:
   schedule:
     - cron: '0 3 * * *'
-  workflow_dispatch:
+  workflow_dispatch: # 允许手动触发
 env:
   TZ: Asia/Shanghai
 
@@ -11,22 +11,28 @@ jobs:
   check:
     runs-on: ubuntu-latest
     outputs:
-      ver: ${{ steps.getversion.outputs.ver }}
-      cver: ${{ steps.getversion.outputs.cver }}
+      version: ${{ steps.get-version.outputs.version }}
+      tag_exists: ${{ steps.check-tag.outputs.tag_exists }}
     steps:
-      -
-        name: 检查版本
-        id: getversion
+      - name: Get latest version
+        id: get-version
         run: |
-          ver=`curl https://api.github.com/repos/cloudflare/cloudflared/releases/latest | jq -r '.tag_name'`
-          cver=`curl https://api.github.com/repos/lmq8267/cloudflared/releases/latest | jq -r '.tag_name'`
-          echo "ver=${ver}" >> $GITHUB_OUTPUT
-          echo "cver=${cver}" >> $GITHUB_OUTPUT
+          # 获取cloudflare/cloudflared的最新版本，并设置为"version"输出
+          echo "::set-output name=version::$(curl -s https://api.github.com/repos/cloudflare/cloudflared/releases/latest | jq -r '.tag_name')"
+        shell: bash
+
+      - name: Check if tag exists
+        id: check-tag
+        run: |
+          # 检查我们的仓库中是否存在与cloudflare/cloudflared的最新版本相对应的标签，并将结果设置为"tag_exists"输出
+          TAG_EXISTS=$(curl --silent --head --fail https://github.com/${{ github.repository }}/releases/tag/${{ steps.get-version.outputs.version }} > /dev/null; echo $?)
+          echo "::set-output name=tag_exists::$TAG_EXISTS"
+        shell: bash
 
   build:
     runs-on: ubuntu-latest
     needs: check
-    if: ${{ needs.check.outputs.ver != needs.check.outputs.cver }}
+    if: needs.check.outputs.tag_exists == '1'
     steps:
       - 
         name: 安装go
@@ -40,7 +46,7 @@ jobs:
         name: 编译
         run: |
           git clone https://github.com/cloudflare/cloudflared -b ${{ needs.check.outputs.ver }} ../src
-          git clone https://github.com/lmq8267/cloudflared.git /opt/st
+          git clone https://github.com/${{ github.repository }}.git /opt/st
           cd ../src
           sudo timedatectl set-timezone "Asia/Shanghai"
           tar -xvf /opt/st/upx-3.95-amd64_linux.tar.xz -C /opt
@@ -71,3 +77,18 @@ jobs:
         token: ${{ secrets.c8 }}
         retain_days: 2
         keep_minimum_runs: 0
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+      
+    steps:
+      - name: 创建新的 release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.check.outputs.ver }}
+          release_name: Release ${{ needs.check.outputs.ver }}
+          draft: false
+          prerelease: false
